@@ -44,11 +44,11 @@
       "single_rotor": 0.3,
       "multi_rotor": 0.24,
       "correlated": 0.16,
-      "global_shake": 0.08,
-      "ring_flip": 0.1,
-      "crankshaft": 0.06,
-      "ring_kic": 0.06,
-      "amide_flip": 0.06
+      "global_shake": 0.06,
+      "ring_flip": 0.09,
+      "crankshaft": 0.05,
+      "ring_kic": 0.05,
+      "amide_flip": 0.05
     },
     "forced_periodic_move": "global_shake",
     "constrained_fallback_move": "single_rotor",

@@ -15,8 +15,6 @@ from rdkit.Chem import AllChem
 if TYPE_CHECKING:
     from ..relax import Minimizer
 
-_N_RIGID_MODES: int = 6
-_RIGID_BODY_GAP_WINDOW: int = _N_RIGID_MODES + 2
 _DEFAULT_FD_STEP: float = 0.005
 _DEFAULT_EIGENVALUE_THRESHOLD: float = 100.0
 _DEFAULT_MAX_MODES: int = 5
@@ -83,26 +81,81 @@ def _compute_hessian(
     return (hessian + hessian.T) * 0.5
 
 
+def _null_space(a: np.ndarray) -> np.ndarray:
+    """Orthonormal basis for the null space of a, via SVD."""
+    _, s, vt = np.linalg.svd(a, full_matrices=True)
+    rcond = max(a.shape) * np.finfo(float).eps * (s[0] if len(s) > 0 else 1.0)
+    rank = int(np.sum(s > rcond))
+    return vt[rank:].T
+
+
+def _build_vibrational_basis(mol: Chem.Mol, conf_id: int) -> np.ndarray:
+    """Orthonormal basis for the vibrational subspace, shape (3N, 3N−6).
+
+    Builds the six rigid-body vectors (3 translations + 3 rotations) in
+    Cartesian coordinates, then returns their null space — the vibrational
+    subspace.  Near-zero rotation vectors (linear molecules have one) are
+    dropped before the SVD so the basis always spans exactly 3N−6 or 3N−5
+    dimensions.
+
+    Args:
+        mol: molecule supplying atom positions and masses
+        conf_id: conformer from which positions are taken
+
+    Returns:
+        Array of shape (3N, 3N−6) or (3N, 3N−5) for linear molecules
+    """
+    n_atoms = mol.GetNumAtoms()
+    n_dof = 3 * n_atoms
+    pt = Chem.GetPeriodicTable()
+    masses = np.array([pt.GetAtomicWeight(a.GetAtomicNum()) for a in mol.GetAtoms()])
+    pos = mol.GetConformer(conf_id).GetPositions()  # (N, 3)
+
+    com = np.sum(masses[:, None] * pos, axis=0) / np.sum(masses)
+    r = pos - com  # COM-centred positions (N, 3)
+
+    # Translation: uniform displacement along each Cartesian axis
+    trans = np.zeros((3, n_dof))
+    for axis in range(3):
+        trans[axis, axis::3] = 1.0
+    trans /= np.linalg.norm(trans, axis=1, keepdims=True)
+
+    # Rotation: (r × e_axis) per atom, flattened into a 3N vector
+    rot = np.zeros((3, n_dof))
+    for k in range(n_atoms):
+        rx, ry, rz = r[k]
+        rot[0, 3 * k : 3 * k + 3] = [0.0,   rz, -ry]  # r × e_x
+        rot[1, 3 * k : 3 * k + 3] = [-rz, 0.0,   rx]  # r × e_y
+        rot[2, 3 * k : 3 * k + 3] = [ ry,  -rx, 0.0]  # r × e_z
+
+    tr_vecs = list(trans)
+    for d in rot:
+        norm = float(np.linalg.norm(d))
+        if norm > 1e-8 * np.sqrt(float(n_atoms)):
+            tr_vecs.append(d / norm)
+
+    return _null_space(np.stack(tr_vecs))
+
+
 def _select_low_modes(
     hessian: np.ndarray,
+    mol: Chem.Mol,
+    conf_id: int,
     eigenvalue_threshold: float,
     max_modes: int,
 ) -> np.ndarray:
-    """Select low-frequency eigenvectors of a Hessian.
+    """Select low-frequency eigenvectors by projecting out rigid-body modes.
 
-    Diagonalizes the Hessian, locates the rigid-body / conformational boundary
-    via the largest eigenvalue gap within the first _RIGID_BODY_GAP_WINDOW
-    entries, skips all modes up to that boundary, and returns eigenvectors
-    whose eigenvalues are below eigenvalue_threshold, capped at max_modes.
-
-    Using a gap rather than a fixed count of 6 handles linear molecules
-    (only 5 rigid-body modes) and numerical drift when minimization is not
-    fully converged.
+    Builds the Cartesian translation/rotation basis for the conformer, computes
+    its null space (the vibrational subspace), projects the Hessian into that
+    subspace, and diagonalises.  Eigenvectors whose eigenvalues are below
+    eigenvalue_threshold are returned as Cartesian unit-norm displacement vectors.
 
     Args:
-        hessian: symmetric 3N×3N Hessian matrix
-        eigenvalue_threshold: upper eigenvalue bound (kcal/mol/Å²) for mode
-            selection; modes at or above this value are excluded
+        hessian: symmetric 3N×3N Hessian matrix in kcal/mol/Å²
+        mol: molecule providing atom positions and masses
+        conf_id: conformer ID used to build the translation/rotation basis
+        eigenvalue_threshold: upper eigenvalue bound (kcal/mol/Å²)
         max_modes: maximum number of modes to return
 
     Returns:
@@ -110,16 +163,16 @@ def _select_low_modes(
         eigenvectors in ascending eigenvalue order; shape (3N, 0) when
         no conformational modes satisfy the threshold
     """
-    eigenvalues, eigenvectors = np.linalg.eigh(hessian)
-    window = min(_RIGID_BODY_GAP_WINDOW, len(eigenvalues) - 1)
-    n_skip = int(np.argmax(np.diff(eigenvalues[: window + 1]))) + 1
-    conf_vals = eigenvalues[n_skip:]
-    conf_vecs = eigenvectors[:, n_skip:]
+    d_vib = _build_vibrational_basis(mol, conf_id)
+    h_vib = d_vib.T @ hessian @ d_vib
+    eigenvalues, eigenvectors = np.linalg.eigh(h_vib)
+    # d_vib has orthonormal columns so d_vib @ eigenvectors is orthonormal in 3N space
+    vecs = d_vib @ eigenvectors
 
-    mask = conf_vals < eigenvalue_threshold
+    mask = eigenvalues < eigenvalue_threshold
     if not np.any(mask):
         return np.empty((hessian.shape[0], 0))
-    return conf_vecs[:, mask][:, :max_modes]
+    return vecs[:, mask][:, :max_modes]
 
 
 def _scan_along_mode(
@@ -255,7 +308,7 @@ def generate_low_mode_seeds(
         minimizations fail
     """
     hessian = _compute_hessian(mol, ff_props, conf_id, fd_step)
-    low_vecs = _select_low_modes(hessian, eigenvalue_threshold, max_modes)
+    low_vecs = _select_low_modes(hessian, mol, conf_id, eigenvalue_threshold, max_modes)
     if low_vecs.shape[1] == 0:
         return []
 

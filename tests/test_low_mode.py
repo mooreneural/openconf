@@ -13,7 +13,6 @@ from openconf.propose.low_mode import (
     _DEFAULT_SCAN_ENERGY_THRESHOLD,
     _DEFAULT_SCAN_MAX_STEPS,
     _DEFAULT_SCAN_STEP_SIZE,
-    _N_RIGID_MODES,
     _compute_hessian,
     _scan_along_mode,
     _select_low_modes,
@@ -75,7 +74,7 @@ def test_hessian_positive_eigenvalues_at_minimum():
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
     eigenvalues = np.linalg.eigvalsh(H)
-    conformational = eigenvalues[_N_RIGID_MODES:]
+    conformational = eigenvalues[6:]
     neg = conformational[conformational < -0.5]
     assert np.all(conformational > -0.5), f"Unexpected large negative eigenvalues: {neg}"
 
@@ -90,7 +89,7 @@ def test_select_low_modes_returns_correct_shape():
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
     n_dof = 3 * mol.GetNumAtoms()
-    vecs = _select_low_modes(H, _DEFAULT_EIGENVALUE_THRESHOLD, _DEFAULT_MAX_MODES)
+    vecs = _select_low_modes(H, mol, 0, _DEFAULT_EIGENVALUE_THRESHOLD, _DEFAULT_MAX_MODES)
     assert vecs.shape[0] == n_dof
     assert vecs.shape[1] <= _DEFAULT_MAX_MODES
 
@@ -99,7 +98,7 @@ def test_select_low_modes_empty_when_threshold_zero():
     """No modes returned when threshold is effectively zero."""
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
-    vecs = _select_low_modes(H, eigenvalue_threshold=0.0, max_modes=10)
+    vecs = _select_low_modes(H, mol, 0, eigenvalue_threshold=0.0, max_modes=10)
     assert vecs.shape[1] == 0
 
 
@@ -108,7 +107,7 @@ def test_select_low_modes_respects_max_modes():
     mol, props = _make_minimized_mol("CCCCC")
     H = _compute_hessian(mol, props, conf_id=0)
     for cap in [1, 2, 3]:
-        vecs = _select_low_modes(H, eigenvalue_threshold=500.0, max_modes=cap)
+        vecs = _select_low_modes(H, mol, 0, eigenvalue_threshold=500.0, max_modes=cap)
         assert vecs.shape[1] <= cap, f"Got {vecs.shape[1]} modes with cap={cap}"
 
 
@@ -116,7 +115,7 @@ def test_select_low_modes_columns_are_unit_vectors():
     """Returned eigenvectors must have unit norm (they come from eigh)."""
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
-    vecs = _select_low_modes(H, _DEFAULT_EIGENVALUE_THRESHOLD, _DEFAULT_MAX_MODES)
+    vecs = _select_low_modes(H, mol, 0, _DEFAULT_EIGENVALUE_THRESHOLD, _DEFAULT_MAX_MODES)
     if vecs.shape[1] == 0:
         pytest.skip("No low modes found — threshold may need adjustment")
     norms = np.linalg.norm(vecs, axis=0)
@@ -132,7 +131,7 @@ def test_scan_along_mode_moves_from_start():
     """Scan must return positions that differ from the starting geometry."""
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
-    vecs = _select_low_modes(H, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
+    vecs = _select_low_modes(H, mol, 0, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
     if vecs.shape[1] == 0:
         pytest.skip("No low modes found")
 
@@ -151,7 +150,7 @@ def test_scan_along_mode_restores_start_conformer():
     """The start conformer must be unchanged after scanning."""
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
-    vecs = _select_low_modes(H, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
+    vecs = _select_low_modes(H, mol, 0, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
     if vecs.shape[1] == 0:
         pytest.skip("No low modes found")
 
@@ -173,7 +172,7 @@ def test_scan_stops_at_energy_threshold():
     """With a near-zero energy threshold, scan must stop after the first step."""
     mol, props = _make_minimized_mol("CCC")
     H = _compute_hessian(mol, props, conf_id=0)
-    vecs = _select_low_modes(H, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
+    vecs = _select_low_modes(H, mol, 0, _DEFAULT_EIGENVALUE_THRESHOLD, 1)
     if vecs.shape[1] == 0:
         pytest.skip("No low modes found")
 
