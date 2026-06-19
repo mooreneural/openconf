@@ -126,14 +126,14 @@ def _build_vibrational_basis(mol: Chem.Mol, conf_id: int) -> np.ndarray:
         trans[axis, axis::3] = sqrt_masses
     trans /= np.linalg.norm(trans, axis=1, keepdims=True)
 
-    # Mass-weighted rotation: R_k[3i:3i+3] = sqrt(m_i) * (r_i × e_k).
+    # Mass-weighted rotation: R_k[3i:3i+3] = sqrt(m_i) * (r_i x e_k).
     rot = np.zeros((3, n_dof))
     for k in range(n_atoms):
         sqrt_mk = sqrt_masses[k]
         rx, ry, rz = r[k]
-        rot[0, 3 * k : 3 * k + 3] = sqrt_mk * np.array([0.0, rz, -ry])   # r × e_x
-        rot[1, 3 * k : 3 * k + 3] = sqrt_mk * np.array([-rz, 0.0, rx])   # r × e_y
-        rot[2, 3 * k : 3 * k + 3] = sqrt_mk * np.array([ry, -rx, 0.0])   # r × e_z
+        rot[0, 3 * k : 3 * k + 3] = sqrt_mk * np.array([0.0, rz, -ry])   # r x e_x
+        rot[1, 3 * k : 3 * k + 3] = sqrt_mk * np.array([-rz, 0.0, rx])   # r x e_y
+        rot[2, 3 * k : 3 * k + 3] = sqrt_mk * np.array([ry, -rx, 0.0])   # r x e_z
 
     # Threshold scales with sqrt(total_mass) since mass-weighted norms grow
     # as sqrt(M_total * r^2). Drops near-zero vectors for linear molecules.
@@ -317,7 +317,8 @@ def generate_low_mode_seeds(
         ff_props: pre-prepared MMFFMoleculeProperties used to build force fields
         conf_id: ID of a minimized conformer to compute modes from
         minimizer: minimizer applied to each scan endpoint
-        eigenvalue_threshold: Hessian eigenvalue cutoff (kcal/mol/Å²); modes
+        eigenvalue_threshold: Hessian eigenvalue cutoff in mass-weighted
+            coordinates (kcal/mol/Å²/Da, proportional to omega^2); modes
             below this value are treated as conformationally soft
         max_modes: maximum number of low modes to scan per conformer
         scan_step_size: distance to advance per scan step in Å (3N Euclidean
